@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>360 Pro - Fold Edition</title>
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; color: white; overflow: hidden; font-family: system-ui, -apple-system, sans-serif; }
+        #camera-view { width: 100%; height: 100%; object-fit: cover; position: absolute; background: #222; }
+        #overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 10; }
+        .ui-panel { position: absolute; bottom: 30px; left: 0; width: 100%; display: flex; justify-content: center; gap: 15px; z-index: 20; }
+        button { background: #fff; color: #000; border: none; padding: 15px 25px; border-radius: 50px; font-weight: bold; font-size: 14px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
+        #debug-log { position: absolute; top: 10px; left: 10px; font-size: 10px; color: #0f0; pointer-events: none; max-width: 80%; z-index: 30; }
+        #preview-strip { position: absolute; bottom: 100px; left: 0; width: 100%; display: flex; gap: 5px; overflow-x: auto; padding: 10px; z-index: 15; }
+        .thumb { width: 60px; height: 60px; border: 1px solid #fff; object-fit: cover; border-radius: 4px; }
+    </style>
+</head>
+<body>
+
+<video id="camera-view" autoplay playsinline muted></video>
+<canvas id="overlay"></canvas>
+<div id="debug-log">Ready. Tap 'INITIATE SYSTEM'</div>
+<div id="preview-strip"></div>
+
+<div class="ui-panel">
+    <button id="start-btn" onclick="initializeSystem()">INITIATE SYSTEM</button>
+    <button id="cap-btn" onclick="captureFrame()" style="display:none;">CAPTURE</button>
+</div>
+
+<script>
+    const video = document.getElementById('camera-view');
+    const canvas = document.getElementById('overlay');
+    const ctx = canvas.getContext('2d');
+    const log = document.getElementById('debug-log');
+    const previewStrip = document.getElementById('preview-strip');
+
+    function writeLog(msg) {
+        log.innerHTML += `<br>> ${msg}`;
+        console.log(msg);
+    }
+
+    async function initializeSystem() {
+        writeLog("Requesting Sensors...");
+        
+        // 1. Trigger Orientation Permission
+        if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+            const res = await DeviceOrientationEvent.requestPermission();
+            writeLog("Orientation: " + res);
+        }
+        window.addEventListener('deviceorientation', (e) => {
+            // Logic for visual dot
+            drawUI(e.alpha, e.beta);
+        });
+
+        // 2. Trigger Camera
+        try {
+            writeLog("Fetching Cameras...");
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const videoDevices = devices.filter(d => d.kind === 'videoinput');
+            
+            // On Fold 6, we look for the back camera (usually index 1 or 2)
+            // We'll try to find 'ultra' but fallback to any back camera
+            let selected = videoDevices.find(d => d.label.toLowerCase().includes('ultra')) || 
+                           videoDevices.find(d => d.label.toLowerCase().includes('back')) || 
+                           videoDevices[0];
+
+            writeLog("Selected: " + selected.label);
+
+            const constraints = {
+                video: {
+                    deviceId: selected.deviceId,
+                    width: { ideal: 4032 },
+                    height: { ideal: 3024 }
+                }
+            };
+
+            const stream = await navigator.mediaDevices.getUserMedia(constraints);
+            video.srcObject = stream;
+            
+            // Force play
+            video.onloadedmetadata = () => {
+                video.play();
+                writeLog("Viewfinder Active");
+                document.getElementById('start-btn').style.display = 'none';
+                document.getElementById('cap-btn').style.display = 'block';
+            };
+            
+        } catch (err) {
+            writeLog("FAIL: " + err.name + " - " + err.message);
+        }
+    }
+
+    function drawUI(alpha, beta) {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // Simple Horizon Line
+        ctx.strokeStyle = "rgba(0, 255, 0, 0.5)";
+        ctx.setLineDash([5, 5]);
+        ctx.beginPath();
+        ctx.moveTo(0, canvas.height/2 + (beta - 90) * 2);
+        ctx.lineTo(canvas.width, canvas.height/2 + (beta - 90) * 2);
+        ctx.stroke();
+
+        // Aiming Circle
+        ctx.setLineDash([]);
+        ctx.strokeStyle = "#fff";
+        ctx.beginPath();
+        ctx.arc(canvas.width/2, canvas.height/2, 40, 0, Math.PI*2);
+        ctx.stroke();
+    }
+
+    function captureFrame() {
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = video.videoWidth;
+        tempCanvas.height = video.videoHeight;
+        const tCtx = tempCanvas.getContext('2d');
+        tCtx.drawImage(video, 0, 0);
+        
+        const dataUrl = tempCanvas.toDataURL('image/jpeg', 0.9);
+        
+        // Add to preview strip
+        const img = document.createElement('img');
+        img.src = dataUrl;
+        img.className = 'thumb';
+        previewStrip.prepend(img);
+        
+        writeLog("Frame Saved Locally");
+    }
+</script>
+</body>
+</html>
