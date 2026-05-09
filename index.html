@@ -1,114 +1,81 @@
-<!DOCTYPE html>
+  <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>360 Pro - Fold Edition</title>
+    <title>360 Sphere Pro + GPS</title>
     <style>
-        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; color: white; overflow: hidden; font-family: system-ui, -apple-system, sans-serif; }
-        #camera-view { width: 100%; height: 100%; object-fit: cover; position: absolute; background: #222; }
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; color: #fff; overflow: hidden; font-family: sans-serif; }
+        #camera-view { width: 100%; height: 100%; object-fit: cover; position: absolute; }
         #overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 10; }
-        .ui-panel { position: absolute; bottom: 30px; left: 0; width: 100%; display: flex; justify-content: center; gap: 15px; z-index: 20; }
-        button { background: #fff; color: #000; border: none; padding: 15px 25px; border-radius: 50px; font-weight: bold; font-size: 14px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
-        #debug-log { position: absolute; top: 10px; left: 10px; font-size: 10px; color: #0f0; pointer-events: none; max-width: 80%; z-index: 30; }
-        #preview-strip { position: absolute; bottom: 100px; left: 0; width: 100%; display: flex; gap: 5px; overflow-x: auto; padding: 10px; z-index: 15; }
-        .thumb { width: 60px; height: 60px; border: 1px solid #fff; object-fit: cover; border-radius: 4px; }
+        .controls { position: absolute; bottom: 30px; width: 100%; display: flex; justify-content: center; gap: 10px; z-index: 20; padding: 0 10px; }
+        button { padding: 12px 18px; border-radius: 50px; border: none; font-weight: bold; font-size: 12px; }
+        .btn-capture { background: #fff; color: #000; flex-grow: 2; }
+        .btn-abort { background: #ff4444; color: #fff; }
+        .btn-stitch { background: #44ff44; color: #000; }
+        #info-overlay { position: absolute; top: 10px; left: 10px; font-size: 10px; background: rgba(0,0,0,0.5); padding: 5px; border-radius: 5px; z-index: 30; pointer-events: none; }
     </style>
 </head>
 <body>
 
 <video id="camera-view" autoplay playsinline muted></video>
 <canvas id="overlay"></canvas>
-<div id="debug-log">Ready. Tap 'INITIATE SYSTEM'</div>
-<div id="preview-strip"></div>
+<div id="info-overlay">GPS: Waiting... | Lens: Detect...</div>
 
-<div class="ui-panel">
-    <button id="start-btn" onclick="initializeSystem()">INITIATE SYSTEM</button>
-    <button id="cap-btn" onclick="captureFrame()" style="display:none;">CAPTURE</button>
+<div class="controls">
+    <button class="btn-abort" onclick="location.reload()">RESET</button>
+    <button id="cap-btn" class="btn-capture" onclick="captureFrame()">SNAP & SAVE DATA</button>
+    <button id="stitch-btn" class="btn-stitch" onclick="processStitch()" style="display:none;">STITCH</button>
 </div>
 
 <script>
     const video = document.getElementById('camera-view');
     const canvas = document.getElementById('overlay');
     const ctx = canvas.getContext('2d');
-    const log = document.getElementById('debug-log');
-    const previewStrip = document.getElementById('preview-strip');
+    const info = document.getElementById('info-overlay');
 
-    function writeLog(msg) {
-        log.innerHTML += `<br>> ${msg}`;
-        console.log(msg);
-    }
+    let capturedFrames = [];
+    let currentGPS = { lat: 0, lon: 0 };
+    let cameraSettings = {};
 
-    async function initializeSystem() {
-        writeLog("Requesting Sensors...");
-        
-        // 1. Trigger Orientation Permission
-        if (typeof DeviceOrientationEvent.requestPermission === 'function') {
-            const res = await DeviceOrientationEvent.requestPermission();
-            writeLog("Orientation: " + res);
-        }
-        window.addEventListener('deviceorientation', (e) => {
-            // Logic for visual dot
-            drawUI(e.alpha, e.beta);
-        });
-
-        // 2. Trigger Camera
+    async function init() {
         try {
-            writeLog("Fetching Cameras...");
-            const devices = await navigator.mediaDevices.enumerateDevices();
-            const videoDevices = devices.filter(d => d.kind === 'videoinput');
-            
-            // On Fold 6, we look for the back camera (usually index 1 or 2)
-            // We'll try to find 'ultra' but fallback to any back camera
-            let selected = videoDevices.find(d => d.label.toLowerCase().includes('ultra')) || 
-                           videoDevices.find(d => d.label.toLowerCase().includes('back')) || 
-                           videoDevices[0];
+            // 1. Get Location
+            navigator.geolocation.watchPosition(pos => {
+                currentGPS = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+                updateInfo();
+            }, err => console.log("GPS Denied"), { enableHighAccuracy: true });
 
-            writeLog("Selected: " + selected.label);
-
-            const constraints = {
-                video: {
-                    deviceId: selected.deviceId,
-                    width: { ideal: 4032 },
-                    height: { ideal: 3024 }
-                }
-            };
-
-            const stream = await navigator.mediaDevices.getUserMedia(constraints);
+            // 2. Get Camera with Metadata Access
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { facingMode: "environment", width: { ideal: 4032 }, height: { ideal: 3024 } } 
+            });
             video.srcObject = stream;
             
-            // Force play
-            video.onloadedmetadata = () => {
-                video.play();
-                writeLog("Viewfinder Active");
-                document.getElementById('start-btn').style.display = 'none';
-                document.getElementById('cap-btn').style.display = 'block';
-            };
+            // Extract Hardware Specs from Fold 6
+            const track = stream.getVideoTracks()[0];
+            cameraSettings = track.getSettings();
+            updateInfo();
             
-        } catch (err) {
-            writeLog("FAIL: " + err.name + " - " + err.message);
-        }
+            requestAnimationFrame(renderLoop);
+        } catch (e) { alert("Initialization failed: " + e.message); }
     }
 
-    function drawUI(alpha, beta) {
+    function updateInfo() {
+        info.innerHTML = `GPS: ${currentGPS.lat.toFixed(4)}, ${currentGPS.lon.toFixed(4)}<br>
+                          LENS: ${cameraSettings.label || 'Ultra-Wide'}<br>
+                          RES: ${video.videoWidth}x${video.videoHeight}`;
+    }
+
+    function renderLoop() {
         canvas.width = window.innerWidth;
         canvas.height = window.innerHeight;
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-        // Simple Horizon Line
-        ctx.strokeStyle = "rgba(0, 255, 0, 0.5)";
-        ctx.setLineDash([5, 5]);
-        ctx.beginPath();
-        ctx.moveTo(0, canvas.height/2 + (beta - 90) * 2);
-        ctx.lineTo(canvas.width, canvas.height/2 + (beta - 90) * 2);
-        ctx.stroke();
-
-        // Aiming Circle
-        ctx.setLineDash([]);
+        
+        // Simple visual level
         ctx.strokeStyle = "#fff";
-        ctx.beginPath();
-        ctx.arc(canvas.width/2, canvas.height/2, 40, 0, Math.PI*2);
-        ctx.stroke();
+        ctx.beginPath(); ctx.arc(canvas.width/2, canvas.height/2, 40, 0, Math.PI*2); ctx.stroke();
+        requestAnimationFrame(renderLoop);
     }
 
     function captureFrame() {
@@ -118,16 +85,56 @@
         const tCtx = tempCanvas.getContext('2d');
         tCtx.drawImage(video, 0, 0);
         
-        const dataUrl = tempCanvas.toDataURL('image/jpeg', 0.9);
+        // Bundle image with Metadata
+        const frameData = {
+            image: tempCanvas.toDataURL('image/jpeg', 1.0),
+            location: { ...currentGPS },
+            timestamp: new Date().toISOString(),
+            settings: { ...cameraSettings }
+        };
         
-        // Add to preview strip
-        const img = document.createElement('img');
-        img.src = dataUrl;
-        img.className = 'thumb';
-        previewStrip.prepend(img);
+        capturedFrames.push(frameData);
         
-        writeLog("Frame Saved Locally");
+        // Feedback
+        if(capturedFrames.length >= 2) document.getElementById('stitch-btn').style.display = 'block';
+        alert(`Captured Frame ${capturedFrames.length} at ${currentGPS.lat.toFixed(2)}`);
     }
+
+    function processStitch() {
+        const finalCanvas = document.createElement('canvas');
+        finalCanvas.width = video.videoWidth * 2; 
+        finalCanvas.height = video.videoHeight;
+        const fCtx = finalCanvas.getContext('2d');
+
+        // Simple blend stitching
+        capturedFrames.forEach((frame, i) => {
+            const img = new Image();
+            img.onload = () => {
+                fCtx.globalAlpha = 0.7; 
+                fCtx.drawImage(img, i * (video.videoWidth / 2), 0);
+                if (i === capturedFrames.length - 1) saveToGallery(finalCanvas);
+            };
+            img.src = frame.image;
+        });
+    }
+
+    function saveToGallery(resultCanvas) {
+        // Construct filename with GPS data for easy searching in Gallery
+        const filename = `360_Pano_${currentGPS.lat.toFixed(2)}_${currentGPS.lon.toFixed(2)}.jpg`;
+        
+        const link = document.createElement('a');
+        link.download = filename;
+        link.href = resultCanvas.toDataURL('image/jpeg', 1.0);
+        
+        // Trigger the "Download" which moves it to the device storage
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        
+        alert("Image sent to Gallery/Downloads!");
+    }
+
+    window.onload = init;
 </script>
 </body>
 </html>
